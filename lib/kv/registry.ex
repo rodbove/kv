@@ -6,8 +6,8 @@ defmodule KV.Registry do
   @doc """
   Starts the registry.
   """
-  def start_link(event_manager, opts \\ []) do
-    GenServer.start_link(__MODULE__, event_manager, opts)
+  def start_link(opts) do
+    GenServer.start_link(__MODULE__, :ok, opts)
   end
 
   @doc """
@@ -20,55 +20,48 @@ defmodule KV.Registry do
   end
 
   @doc """
-  Ensures there is a bucket associated to the given `name` in `server`.
+  Ensures there is a bucket associated with the given `name` in `server`.
   """
   def create(server, name) do
     GenServer.cast(server, {:create, name})
   end
 
-  @doc """
-  Stops registry.
-  """
-  def stop(server) do
-    GenServer.call(server, :stop)
-  end
-
   ## Server callbacks
 
-  def init(events) do
-    names = Map.new()
-    refs = Map.new()
-    {:ok, %{names: names, refs: refs, events: events}}
+  @impl true
+  def init(:ok) do
+    names = %{}
+    refs = %{}
+    {:ok, {names, refs}}
   end
 
+  @impl true
   def handle_call({:lookup, name}, _from, state) do
-    {:reply, Map.fetch(state.names, name), state}
+    {names, _} = state
+    {:reply, Map.fetch(names, name), state}
   end
 
-  def handle_call(:stop, _from, state) do
-    {:stop, :normal, :ok, state}
-  end
-
-  def handle_cast({:create, name}, state) do
-    if Map.has_key?(state.names, name) do
-      {:noreply, state}
+  @impl true
+  def handle_cast({:create, name}, {names, refs}) do
+    if Map.has_key?(names, name) do
+      {:noreply, {names, refs}}
     else
-      {:ok, pid} = KV.Bucket.start_link()
-      ref = Process.monitor(pid)
-      refs = Map.put(state.refs, ref, name)
-      names = Map.put(state.names, name, pid)
-      GenEvent.sync_notify(state.events, {:create, name, pid})
-      {:noreply, %{state | names: names, refs: refs}}
+      {:ok, bucket} = KV.Bucket.start_link([])
+      ref = Process.monitor(bucket)
+      refs = Map.put(refs, ref, name)
+      names = Map.put(names, name, bucket)
+      {:noreply, {names, refs}}
     end
   end
 
-  def handle_info({:DOWN, ref, :process, pid, _reason}, state) do
-    {name, refs} = Map.pop(state.refs, ref)
-    names = Map.delete(state.names, name)
-    GenEvent.sync_notify(state.events, {:exit, name, pid})
-    {:noreply, %{state | names: names, refs: refs}}
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, {names, refs}) do
+    {name, refs} = Map.pop(refs, ref)
+    names = Map.delete(names, name)
+    {:noreply, {names, refs}}
   end
 
+  @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
